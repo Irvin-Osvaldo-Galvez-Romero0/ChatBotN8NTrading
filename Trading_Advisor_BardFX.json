@@ -1,0 +1,278 @@
+{
+  "id": "zd0pfJcGScp90mQ1",
+  "name": "Trading Advisor BardFX",
+  "active": true,
+  "isArchived": false,
+  "versionId": "60ab363b-138e-42e6-b61c-1d33c143fdad",
+  "activeVersionId": "60ab363b-138e-42e6-b61c-1d33c143fdad",
+  "triggerCount": 2,
+  "nodeCount": 8,
+  "createdAt": "2026-09-20T01:18:51.378Z",
+  "updatedAt": "2026-09-20T02:00:27.733Z",
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true
+  },
+  "tags": [],
+  "parentFolderId": null,
+  "description": "Trading Advisor multiactivo con metodología Bard.fx (No Wick / Compensation Play a 5m) y gestión de riesgo 1:1.",
+  "scopes": [
+    "execution:reveal",
+    "workflow:create",
+    "workflow:delete",
+    "workflow:disableRedaction",
+    "workflow:enableRedaction",
+    "workflow:execute",
+    "workflow:execute-chat",
+    "workflow:export",
+    "workflow:import",
+    "workflow:list",
+    "workflow:move",
+    "workflow:publish",
+    "workflow:read",
+    "workflow:share",
+    "workflow:unpublish",
+    "workflow:unshare",
+    "workflow:update"
+  ],
+  "canExecute": true,
+  "connections": {
+    "Telegram Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Normalize Input": {
+      "main": [
+        [
+          {
+            "node": "Fetch 5m Candles (Yahoo Finance)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Fetch 5m Candles (Yahoo Finance)": {
+      "main": [
+        [
+          {
+            "node": "Bard.fx Engine & Trade Math",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Bard.fx Engine & Trade Math": {
+      "main": [
+        [
+          {
+            "node": "Send Telegram Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Send Telegram Alert": {
+      "main": [
+        [
+          {
+            "node": "Is Webhook Trigger",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Is Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Vigilante Scanner (Cron 5m)": {
+      "main": [
+        [
+          {
+            "node": "Normalize Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "id": "c97564a9-e92a-4763-bd3c-bc9f964c7103",
+      "name": "Telegram Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "trading-advisor-webhook",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "3edcceaa-74ee-4070-9e8e-d4cb7e266203"
+    },
+    {
+      "id": "b8dafea9-0bc8-45ca-93cc-69b2347c2dab",
+      "name": "Normalize Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        224,
+        96
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const firstItem = $input.first()?.json || {};\nconst body = firstItem.body || firstItem.query || firstItem;\n\n// 1. Detección de origen: Cron de vigilancia autónoma vs Webhook/Telegram\nconst isScheduled = Boolean(firstItem.timestamp && !firstItem.headers && !body.message && !body.callback_query && !body.ticker && !body.mode);\nconst triggerSource = isScheduled ? 'schedule' : 'webhook';\nconst telegramChatId = String(\n  body.callback_query?.message?.chat?.id ||\n  body.message?.chat?.id ||\n  body.chat_id ||\n  '5900371156'\n);\n\n// 2. Almacenamiento persistente del usuario (Global Workflow Static Data)\nlet staticData = {};\ntry {\n  staticData = $getWorkflowStaticData('global');\n} catch (e) {\n  staticData = {};\n}\n\nif (!staticData.v2_clean_initialized) {\n  staticData.accountSize = 10000; // $10,000 USD default\n  staticData.riskPercent = 1.0;   // 1% riesgo por trade\n  staticData.watchlist = [];      // Inicia completamente vacío\n  staticData.positions = [];      // Inicia completamente vacío\n  staticData.processedCallbackIds = [];\n  staticData.v2_clean_initialized = true;\n  staticData.initialized = true;\n}\n\nif (!Array.isArray(staticData.watchlist)) staticData.watchlist = [];\nif (!Array.isArray(staticData.positions)) staticData.positions = [];\n\n// 3. De-duplicación y respuesta rápida a callbacks de Telegram\nif (body.callback_query) {\n  const cbId = String(body.callback_query.id || '');\n  const cbData = String(body.callback_query.data || '');\n  const now = Date.now();\n\n  if (cbId) {\n    try {\n      fetch('https://api.telegram.org/bot8923613669:AAG8CHP09iybu_B47XUPsMeeMdj-rURX9Ds/answerCallbackQuery', {\n        method: 'POST',\n        headers: { 'Content-Type': 'application/json' },\n        body: JSON.stringify({ callback_query_id: cbId })\n      }).catch(() => {});\n    } catch (e) {}\n  }\n\n  if (staticData.processedCallbackIds && staticData.processedCallbackIds.includes(cbId)) {\n    return [];\n  }\n  if (staticData.lastCallbackData === cbData && (now - (staticData.lastCallbackTime || 0)) < 3500) {\n    return [];\n  }\n\n  if (!Array.isArray(staticData.processedCallbackIds)) staticData.processedCallbackIds = [];\n  staticData.processedCallbackIds.push(cbId);\n  if (staticData.processedCallbackIds.length > 50) staticData.processedCallbackIds.shift();\n\n  staticData.lastCallbackData = cbData;\n  staticData.lastCallbackTime = now;\n}\n\n// 4. Extraer texto o comando\nlet rawText = String(\n  body.callback_query?.data ||\n  body.message?.text ||\n  body.ticker ||\n  body.symbol ||\n  body.text ||\n  ''\n).trim();\n\nlet cleanInput = rawText.toUpperCase();\nif (cleanInput.startsWith('/')) {\n  cleanInput = cleanInput.substring(1).trim();\n}\n\n// Helper para normalizar símbolos populares\nconst normalizeTicker = (t) => {\n  let sym = (t || '').toUpperCase().trim();\n  if (sym === 'EURUSD') return 'EURUSD=X';\n  if (sym === 'GBPUSD') return 'GBPUSD=X';\n  if (sym === 'USDJPY') return 'USDJPY=X';\n  if (sym === 'AUDUSD') return 'AUDUSD=X';\n  if (sym === 'BTC' || sym === 'BITCOIN') return 'BTC-USD';\n  if (sym === 'ETH' || sym === 'ETHEREUM') return 'ETH-USD';\n  if (sym === 'SOL' || sym === 'SOLANA') return 'SOL-USD';\n  if (sym === 'ORO' || sym === 'GOLD' || sym === 'XAUUSD') return 'GC=F';\n  if (sym === 'PETROLEO' || sym === 'OIL') return 'CL=F';\n  if (sym === 'PLATA' || sym === 'SILVER') return 'SI=F';\n  return sym;\n};\n\n// ============================================================================\n// A. DISPARO AUTÓNOMO PROGRAMADO (VIGILANTE CRON CADA 15 MINUTOS)\n// REGLA CRUCIAL: SOLO VIGILA LO QUE EL USUARIO REGISTRÓ (COMPRAS O VIGILANCIA).\n// SI ESTÁ VACÍO, RETORNA [] (0 MENSAJES, 0 ALERTAS FANTASMA).\n// ============================================================================\nif (isScheduled) {\n  const activeSymbols = Array.from(new Set([\n    ...staticData.watchlist,\n    ...staticData.positions.map(p => p.symbol)\n  ]));\n\n  if (activeSymbols.length === 0) {\n    return [];\n  }\n\n  return activeSymbols.map(symbol => {\n    const pos = staticData.positions.find(p => p.symbol === symbol) || null;\n    return {\n      json: {\n        ticker: symbol,\n        mode: 'scheduled_scan',\n        triggerSource,\n        telegramChatId,\n        accountSize: staticData.accountSize,\n        riskPercent: staticData.riskPercent,\n        position: pos,\n        allPositions: staticData.positions,\n        watchlist: staticData.watchlist\n      }\n    };\n  });\n}\n\n// ============================================================================\n// B. CONFIGURAR SALDO/CAPITAL DE LA CUENTA (Ej: \"CAPITAL 5000\", \"CUENTA 20000\")\n// ============================================================================\nif (cleanInput.startsWith('CAPITAL') || cleanInput.startsWith('CUENTA') || cleanInput.startsWith('SALDO')) {\n  const parts = cleanInput.split(/[\\s,:]+/).filter(Boolean);\n  const amount = parseFloat(parts[1]?.replace('$', ''));\n  if (amount && !isNaN(amount) && amount > 0) {\n    staticData.accountSize = amount;\n    const dollarRisk = (staticData.accountSize * staticData.riskPercent / 100).toFixed(2);\n    return [{\n      json: {\n        ticker: 'EURUSD=X',\n        mode: 'config_success',\n        configMsg: `✅ *CAPITAL CONFIGURADO CON ÉXITO*\\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\n💵 *Saldo de Cuenta:* $${amount.toLocaleString('en-US')} USD\\n⚖️ *Riesgo Configurado:* ${staticData.riskPercent}% ($${dollarRisk} USD por trade)`,\n        triggerSource,\n        telegramChatId,\n        accountSize: staticData.accountSize,\n        riskPercent: staticData.riskPercent,\n        positions: staticData.positions,\n        watchlist: staticData.watchlist\n      }\n    }];\n  }\n}\n\n// ============================================================================\n// C. CONFIGURAR RIESGO PORCENTUAL (Ej: \"RIESGO 1\", \"RIESGO 1.5%\", \"RISK 2\")\n// ============================================================================\nif (cleanInput.startsWith('RIESGO') || cleanInput.startsWith('RISK')) {\n  const parts = cleanInput.split(/[\\s,:%]+/).filter(Boolean);\n  const pct = parseFloat(parts[1]);\n  if (pct && !isNaN(pct) && pct > 0 && pct <= 10) {\n    staticData.riskPercent = pct;\n    const dollarRisk = (staticData.accountSize * pct / 100).toFixed(2);\n    return [{\n      json: {\n        ticker: 'EURUSD=X',\n        mode: 'config_success',\n        configMsg: `✅ *RIESGO POR TRADE ACTUALIZADO*\\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\n⚖️ *Riesgo:* ${pct}%\\n💵 *Pérdida Máxima por SL:* $${dollarRisk} USD\\n(Basado en tu capital de $${staticData.accountSize.toLocaleString('en-US')} USD)`,\n        triggerSource,\n        telegramChatId,\n        accountSize: staticData.accountSize,\n        riskPercent: staticData.riskPercent,\n        positions: staticData.positions,\n        watchlist: staticData.watchlist\n      }\n    }];\n  }\n}\n\n// ============================================================================\n// D. REGISTRAR COMPRA / POSICIÓN CON MONTO Y PRECIO\n// Ejemplos:\n// \"COMPRAR NVDA 120 1000\" (Ticker: NVDA, Precio compra: 120, Monto invertido: 1000 USD)\n// \"COMPRA BTC-USD 60000 500\"\n// \"AGREGAR AAPL 220 1500\"\n// ============================================================================\nif (cleanInput.startsWith('COMPRAR') || cleanInput.startsWith('COMPRA') || cleanInput.startsWith('POSICION') || (cleanInput.startsWith('AGREGAR') && cleanInput.split(/\\s+/).length >= 4)) {\n  const rest = cleanInput.replace(/^(COMPRAR|COMPRA|POSICION|AGREGAR)\\s+/i, '').trim();\n  const parts = rest.split(/[\\s,]+/).filter(Boolean);\n  const rawTicker = parts[0] || '';\n  const ticker = normalizeTicker(rawTicker);\n  const buyPrice = parseFloat(parts[1]?.replace('$', ''));\n  const amountUsd = parseFloat(parts[2]?.replace('$', ''));\n\n  if (ticker && buyPrice && amountUsd && !isNaN(buyPrice) && !isNaN(amountUsd) && buyPrice > 0 && amountUsd > 0) {\n    const shares = amountUsd / buyPrice;\n    const existingIndex = staticData.positions.findIndex(p => p.symbol === ticker);\n    const newPos = {\n      symbol: ticker,\n      buyPrice,\n      amountUsd,\n      shares,\n      addedAt: new Date().toISOString().split('T')[0]\n    };\n\n    if (existingIndex >= 0) {\n      staticData.positions[existingIndex] = newPos;\n    } else {\n      staticData.positions.push(newPos);\n    }\n\n    if (!staticData.watchlist.includes(ticker)) {\n      staticData.watchlist.push(ticker);\n    }\n\n    return [{\n      json: {\n        ticker,\n        mode: 'position_success',\n        configMsg: `✅ *COMPRA REGISTRADA PARA VIGILANCIA*\\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\n📌 *Activo:* \\`${ticker}\\`\\n💲 *Precio de Entrada:* $${buyPrice.toLocaleString('en-US')}\\n💰 *Monto Invertido:* $${amountUsd.toLocaleString('en-US')} USD\\n📊 *Títulos / Unidades:* ${shares.toFixed(4)}\\n\\n🛡️ *El Vigilante Autónomo supervisará:*\\n• Descenso de precio bajo Stop Loss (5m)\\n• Ratio 1:1 para mover a Break Even (BE)\\n• Take Profit en lo alto de vela impulsiva`,\n        triggerSource,\n        telegramChatId,\n        accountSize: staticData.accountSize,\n        riskPercent: staticData.riskPercent,\n        position: newPos,\n        positions: staticData.positions,\n        watchlist: staticData.watchlist\n      }\n    }];\n  }\n}\n\n// ============================================================================\n// E. AGREGAR SOLO ACTIVO EN VIGILANCIA (Sin compra previa)\n// Ej: \"VIGILAR TSLA\", \"AGREGAR EURUSD=X\", \"VIGILAR BTC-USD\"\n// ============================================================================\nif (cleanInput.startsWith('VIGILAR') || (cleanInput.startsWith('AGREGAR') && cleanInput.split(/\\s+/).length < 4) || cleanInput.startsWith('WATCH')) {\n  const rest = cleanInput.replace(/^(VIGILAR|AGREGAR|WATCH)\\s+/i, '').trim();\n  const parts = rest.split(/[\\s,]+/).filter(Boolean);\n  const rawTicker = parts[0] || '';\n  const ticker = normalizeTicker(rawTicker);\n\n  if (ticker && ticker.length >= 2) {\n    if (!staticData.watchlist.includes(ticker)) {\n      staticData.watchlist.push(ticker);\n    }\n    return [{\n      json: {\n        ticker,\n        mode: 'watchlist_success',\n        configMsg: `✅ *ACTIVO AGREGADO A LA VIGILANCIA*\\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\n📌 *Activo:* \\`${ticker}\\`\\n\\nEl Vigilante Autónomo revisará este activo cada 15m buscando gatillos de entrada Bard.fx (No Wick / Vela sin mecha + mitigación a 5m).`,\n        triggerSource,\n        telegramChatId,\n        accountSize: staticData.accountSize,\n        riskPercent: staticData.riskPercent,\n        positions: staticData.positions,\n        watchlist: staticData.watchlist\n      }\n    }];\n  }\n}\n\n// ============================================================================\n// F. VER MI PORTAFOLIO Y COMPRAS (Botón o comando /portafolio)\n// ============================================================================\nif (cleanInput === 'PORTAFOLIO' || cleanInput === 'CARTERA' || cleanInput === 'MIS ACTIVOS' || cleanInput === 'COMPRAS' || cleanInput === 'POSICIONES' || cleanInput === 'MY_PORTFOLIO') {\n  const activeSymbols = Array.from(new Set([\n    ...staticData.watchlist,\n    ...staticData.positions.map(p => p.symbol)\n  ]));\n\n  if (activeSymbols.length === 0) {\n    return [{\n      json: {\n        ticker: 'EURUSD=X',\n        mode: 'portfolio_empty',\n        triggerSource,\n        telegramChatId,\n        accountSize: staticData.accountSize,\n        riskPercent: staticData.riskPercent,\n        positions: [],\n        watchlist: []\n      }\n    }];\n  }\n\n  return activeSymbols.map(symbol => {\n    const pos = staticData.positions.find(p => p.symbol === symbol) || null;\n    return {\n      json: {\n        ticker: symbol,\n        mode: 'portfolio_view',\n        triggerSource,\n        telegramChatId,\n        accountSize: staticData.accountSize,\n        riskPercent: staticData.riskPercent,\n        position: pos,\n        allPositions: staticData.positions,\n        watchlist: staticData.watchlist\n      }\n    };\n  });\n}\n\n// ============================================================================\n// G. ELIMINAR / QUITAR ACTIVO O POSICIÓN\n// ============================================================================\nif (cleanInput.startsWith('QUITAR') || cleanInput.startsWith('ELIMINAR') || cleanInput.startsWith('BORRAR') || cleanInput.startsWith('VENDER')) {\n  if (cleanInput.includes('TODO') || cleanInput.includes('ALL') || cleanInput.includes('LIMPIAR')) {\n    staticData.positions = [];\n    staticData.watchlist = [];\n    return [{\n      json: {\n        ticker: 'EURUSD=X',\n        mode: 'clear_success',\n        configMsg: `🗑️ *PORTAFOLIO Y VIGILANCIA VACIADOS*\\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\nSe han eliminado todas las compras y activos.\\n⏸️ *El Vigilante Autónomo entra en PAUSA* y no emitirá ninguna alerta hasta que agregues nuevos activos.`,\n        triggerSource,\n        telegramChatId,\n        accountSize: staticData.accountSize,\n        riskPercent: staticData.riskPercent,\n        positions: [],\n        watchlist: []\n      }\n    }];\n  }\n\n  const rest = cleanInput.replace(/^(QUITAR|ELIMINAR|BORRAR|VENDER)\\s+/i, '').trim();\n  const ticker = normalizeTicker(rest.split(/[\\s,]+/)[0]);\n\n  if (ticker) {\n    staticData.positions = staticData.positions.filter(p => p.symbol !== ticker);\n    staticData.watchlist = staticData.watchlist.filter(w => w !== ticker);\n    return [{\n      json: {\n        ticker: 'EURUSD=X',\n        mode: 'config_success',\n        configMsg: `🗑️ *ACTIVO RETIRADO:* \\`${ticker}\\`\\nYa no recibirás alertas sobre este activo.\\nActivos restantes en vigilancia: ${staticData.watchlist.length > 0 ? staticData.watchlist.map(w => '`' + w + '`').join(', ') : '_Ninguno (Vigilante en pausa)_'}`,\n        triggerSource,\n        telegramChatId,\n        accountSize: staticData.accountSize,\n        riskPercent: staticData.riskPercent,\n        positions: staticData.positions,\n        watchlist: staticData.watchlist\n      }\n    }];\n  }\n}\n\n// ============================================================================\n// H. LIMPIAR TODO\n// ============================================================================\nif (cleanInput === 'LIMPIAR' || cleanInput === 'VACIAR') {\n  staticData.positions = [];\n  staticData.watchlist = [];\n  return [{\n    json: {\n      ticker: 'EURUSD=X',\n      mode: 'clear_success',\n      configMsg: `🗑️ *PORTAFOLIO Y VIGILANCIA VACIADOS*\\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\n⏸️ *El Vigilante Autónomo está en pausa*. No enviará alertas hasta que agregues activos o compras.`,\n      triggerSource,\n      telegramChatId,\n      accountSize: staticData.accountSize,\n      riskPercent: staticData.riskPercent,\n      positions: [],\n      watchlist: []\n    }\n  }];\n}\n\n// ============================================================================\n// I. GUÍA ¿CÓMO AGREGAR COMPRAS O ACTIVOS?\n// ============================================================================\nif (cleanInput === 'COMO_AGREGAR' || cleanInput === 'AYUDA_COMPRA') {\n  return [{\n    json: {\n      ticker: 'EURUSD=X',\n      mode: 'how_to_add',\n      triggerSource,\n      telegramChatId,\n      accountSize: staticData.accountSize,\n      riskPercent: staticData.riskPercent,\n      positions: staticData.positions,\n      watchlist: staticData.watchlist\n    }\n  }];\n}\n\n// ============================================================================\n// J. ESCANEAR AHORA MANUALMENTE\n// ============================================================================\nif (cleanInput === 'SCAN_NOW' || cleanInput === 'ESCANEAR') {\n  const activeSymbols = Array.from(new Set([\n    ...staticData.watchlist,\n    ...staticData.positions.map(p => p.symbol)\n  ]));\n\n  if (activeSymbols.length === 0) {\n    return [{\n      json: {\n        ticker: 'EURUSD=X',\n        mode: 'portfolio_empty',\n        triggerSource,\n        telegramChatId,\n        accountSize: staticData.accountSize,\n        riskPercent: staticData.riskPercent,\n        positions: [],\n        watchlist: []\n      }\n    }];\n  }\n\n  return activeSymbols.map(symbol => {\n    const pos = staticData.positions.find(p => p.symbol === symbol) || null;\n    return {\n      json: {\n        ticker: symbol,\n        mode: 'manual_scan',\n        triggerSource,\n        telegramChatId,\n        accountSize: staticData.accountSize,\n        riskPercent: staticData.riskPercent,\n        position: pos,\n        allPositions: staticData.positions,\n        watchlist: staticData.watchlist\n      }\n    };\n  });\n}\n\n// ============================================================================\n// K. GUÍA DE ESTRATEGIA BARD.FX\n// ============================================================================\nif (cleanInput === 'ESTRATEGIA' || cleanInput === 'REGLAS' || cleanInput === 'BARDFX') {\n  return [{\n    json: {\n      ticker: 'EURUSD=X',\n      mode: 'strategy_guide',\n      triggerSource,\n      telegramChatId,\n      accountSize: staticData.accountSize,\n      riskPercent: staticData.riskPercent,\n      positions: staticData.positions,\n      watchlist: staticData.watchlist\n    }\n  }];\n}\n\n// ============================================================================\n// L. MENÚ PRINCIPAL\n// ============================================================================\nif (!cleanInput || cleanInput === 'START' || cleanInput === 'MENU' || cleanInput === 'AYUDA' || cleanInput === 'HELP') {\n  return [{\n    json: {\n      ticker: 'EURUSD=X',\n      mode: 'menu',\n      triggerSource,\n      telegramChatId,\n      accountSize: staticData.accountSize,\n      riskPercent: staticData.riskPercent,\n      positions: staticData.positions,\n      watchlist: staticData.watchlist\n    }\n  }];\n}\n\n// ============================================================================\n// M. ANÁLISIS INDIVIDUAL DE CUALQUIER ACTIVO\n// ============================================================================\nconst analyzedTicker = normalizeTicker(cleanInput);\nreturn [{\n  json: {\n    ticker: analyzedTicker,\n    mode: 'single_trade',\n    triggerSource,\n    telegramChatId,\n    accountSize: staticData.accountSize,\n    riskPercent: staticData.riskPercent,\n    position: staticData.positions.find(p => p.symbol === analyzedTicker) || null,\n    positions: staticData.positions,\n    watchlist: staticData.watchlist\n  }\n}];"
+      }
+    },
+    {
+      "id": "edc44c2f-d3d8-42c3-ba20-bc3f224ca60c",
+      "name": "Fetch 5m Candles (Yahoo Finance)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        448,
+        96
+      ],
+      "parameters": {
+        "method": "GET",
+        "url": "=https://query1.finance.yahoo.com/v8/finance/chart/{{ $json.ticker }}?interval=5m&range=1d",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "3fccff8e-bd00-4cfd-9846-dc43455221db",
+      "name": "Bard.fx Engine & Trade Math",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        672,
+        96
+      ],
+      "parameters": {
+        "language": "javaScript",
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst normalizeItems = $('Normalize Input').all();\nconst firstRoute = normalizeItems[0]?.json || {};\nconst mode = firstRoute.mode || 'menu';\nconst triggerSource = firstRoute.triggerSource || 'webhook';\nconst telegramChatId = firstRoute.telegramChatId || '5900371156';\nconst accountSize = Number(firstRoute.accountSize || 10000);\nconst riskPercent = Number(firstRoute.riskPercent || 1.0);\nconst riskAmountUsd = Number(((accountSize * riskPercent) / 100).toFixed(2));\n\n// Teclado interactivo para Telegram\nconst inlineKeyboard = [\n  [\n    { text: '💼 Mi Portafolio & Compras', callback_data: 'PORTAFOLIO' },\n    { text: '🎯 Escanear Ahora', callback_data: 'SCAN_NOW' }\n  ],\n  [\n    { text: '➕ ¿Cómo Agregar Compras?', callback_data: 'COMO_AGREGAR' },\n    { text: '📖 Reglas Bard.fx', callback_data: 'ESTRATEGIA' }\n  ],\n  [\n    { text: '🗑️ Limpiar Todo', callback_data: 'LIMPIAR' },\n    { text: '📋 Menú Principal', callback_data: 'MENU' }\n  ]\n];\n\n// Helper de formato monetario\nconst fmtPrice = (p, decimals = 4) => {\n  const price = Number(p || 0);\n  if (price >= 1000) return '$' + price.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });\n  if (price >= 1) return '$' + price.toFixed(2);\n  return '$' + price.toFixed(decimals);\n};\n\n// ============================================================================\n// 1. RESPUESTAS RÁPIDAS DE CONFIGURACIÓN Y MENSAJES INFORMATIVOS\n// ============================================================================\nif (mode === 'config_success' || mode === 'position_success' || mode === 'watchlist_success' || mode === 'clear_success') {\n  return [{\n    json: {\n      mode,\n      triggerSource,\n      telegramChatId,\n      telegramMessage: firstRoute.configMsg,\n      replyMarkup: { inline_keyboard: inlineKeyboard }\n    }\n  }];\n}\n\nif (mode === 'portfolio_empty') {\n  const lines = [\n    '💼 *TU PORTAFOLIO Y LISTA DE VIGILANCIA ESTÁN VACÍOS*',\n    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',\n    '⏸️ *El Vigilante Autónomo está en pausa* para no enviarte alertas innecesarias.',\n    '',\n    'Para que el sistema vigile tus activos y te avise cuando descienda el precio o se alcancen tus salidas, puedes registrar tus compras o activos así:',\n    '',\n    '📌 *1. Registrar una Compra con Monto:*',\n    '• `COMPRAR <TICKER> <PRECIO> <MONTO>`',\n    '  _Ejemplo Acciones:_ `COMPRAR NVDA 120 1000`',\n    '  _Ejemplo Cripto:_ `COMPRAR BTC-USD 60000 500`',\n    '  _Ejemplo Forex:_ `COMPRAR EURUSD=X 1.0850 2000`',\n    '',\n    '📌 *2. Solo Vigilar un Activo (Sin Compra):*',\n    '• `VIGILAR <TICKER>`',\n    '  _Ejemplo:_ `VIGILAR TSLA` o `VIGILAR GC=F`',\n    '',\n    '📌 *3. Configurar tu Capital y Riesgo:*',\n    '• `CAPITAL <MONTO>` ➔ _Ej:_ `CAPITAL 5000`',\n    '• `RIESGO <PORCENTAJE>` ➔ _Ej:_ `RIESGO 1`'\n  ];\n  return [{\n    json: {\n      mode,\n      triggerSource,\n      telegramChatId,\n      telegramMessage: lines.join('\\n'),\n      replyMarkup: { inline_keyboard: inlineKeyboard }\n    }\n  }];\n}\n\nif (mode === 'how_to_add') {\n  const lines = [\n    '📖 *GUÍA: CÓMO AGREGAR ACTIVOS Y COMPRAS*',\n    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',\n    'Puedes escribir directamente en este chat cualquiera de los siguientes comandos:',\n    '',\n    '1️⃣ *Registrar Compra / Posición:*',\n    'Escribe: `COMPRAR <ACTIVO> <PRECIO_COMPRA> <MONTO_USD>`',\n    '• `COMPRAR NVDA 120 1000` ➔ NVDA comprado a $120 invirtiendo $1,000 USD.',\n    '• `COMPRAR BTC-USD 62000 300` ➔ Bitcoin comprado a $62,000 con $300 USD.',\n    '• `COMPRAR EURUSD=X 1.0850 1500` ➔ EUR/USD a 1.0850 con $1,500 USD.',\n    '',\n    '2️⃣ *Solo Vigilar Gatillos (Sin dinero invertido):*',\n    'Escribe: `VIGILAR <ACTIVO>`',\n    '• `VIGILAR AAPL` o `VIGILAR GC=F` (Oro)',\n    '',\n    '3️⃣ *Ajustar Capital y Gestión:*',\n    '• `CAPITAL 10000` (Define tu capital de cuenta)',\n    '• `RIESGO 1` (Define el 1% de riesgo por operación)',\n    '',\n    '4️⃣ *Eliminar o Limpiar:*',\n    '• `QUITAR NVDA` (Remueve de compras y vigilancia)',\n    '• `LIMPIAR` (Vacía todo y pausa el Vigilante)'\n  ];\n  return [{\n    json: {\n      mode,\n      triggerSource,\n      telegramChatId,\n      telegramMessage: lines.join('\\n'),\n      replyMarkup: { inline_keyboard: inlineKeyboard }\n    }\n  }];\n}\n\nif (mode === 'strategy_guide') {\n  const lines = [\n    '📘 *ESTRATEGIA BARD.FX: COMPENSATION PLAY (NO WICK)*',\n    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',\n    'Metodología institucional pura en temporalidad de 5 minutos:',\n    '',\n    '1️⃣ *Vela \"No Wick\" (Sin Mecha):*',\n    'Vela de fuerte volumen institucional que abre e impulsa directamente dejando menos del 8% de mecha inicial.',\n    '',\n    '2️⃣ *Zona de Mitigación / Compensación:*',\n    'El mercado regresa a mitigar el vacío de liquidez dentro de las siguientes 3 a 15 velas.',\n    '',\n    '3️⃣ *Gatillo a 5 Minutos:*',\n    'Vela de rechazo / absorción a favor de la tendencia principal en la zona de compensación.',\n    '',\n    '4️⃣ *Matemática del Trade & Plan de Salida:*',\n    '• 🔴 *Stop Loss:* Bajo/Alto de la vela gatillo a 5m.',\n    '• 🛡️ *Fase 1 (Ratio 1:1):* Al avanzar distancia de 1 SL ➔ Mover Stop Loss a *Break Even (BE)*.',\n    '• 🎯 *Fase 2 (Alto de Vela):* En **lo alto de la vela impulsiva previa** ➔ Toma de parcial del *70%*.',\n    '• 🏃 *Fase 3 (Trailing):* Acompañamiento estructural del 30% restante.'\n  ];\n  return [{\n    json: {\n      mode,\n      triggerSource,\n      telegramChatId,\n      telegramMessage: lines.join('\\n'),\n      replyMarkup: { inline_keyboard: inlineKeyboard }\n    }\n  }];\n}\n\nif (mode === 'menu') {\n  const positions = firstRoute.positions || [];\n  const watchlist = firstRoute.watchlist || [];\n  const lines = [\n    '🤖 *TRADING ADVISOR PRO: BARD.FX & VIGILANTE AUTÓNOMO*',\n    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',\n    `💵 *Capital Configurado:* $${accountSize.toLocaleString('en-US')} USD`,\n    `⚖️ *Riesgo por Trade:* ${riskPercent}% ($${riskAmountUsd} USD)`,\n    `💼 *Compras Registradas:* ${positions.length} posiciones`,\n    `📌 *Activos en Vigilancia:* ${watchlist.length > 0 ? watchlist.map(w => '`' + w + '`').join(', ') : '_Ninguno (Vigilante en pausa)_'}`,\n    '',\n    '🛡️ *Vigilancia Autónoma:* ' + (watchlist.length > 0 || positions.length > 0 ? '🟢 *ACTIVA* (Escaneando cada 15m solo tus activos)' : '⏸️ *PAUSADA* (Agrega compras o activos para activarla)')\n  ];\n  return [{\n    json: {\n      mode,\n      triggerSource,\n      telegramChatId,\n      telegramMessage: lines.join('\\n'),\n      replyMarkup: { inline_keyboard: inlineKeyboard }\n    }\n  }];\n}\n\n// ============================================================================\n// HELPER PARA ANALIZAR VELAS DE YAHOO FINANCE\n// ============================================================================\nconst parseYahooCandles = (chartData) => {\n  if (!chartData || !chartData.chart || !chartData.chart.result || !chartData.chart.result[0]) return null;\n  const result = chartData.chart.result[0];\n  const meta = result.meta || {};\n  const timestamps = result.timestamp || [];\n  const quote = result.indicators?.quote?.[0] || {};\n  const opens = quote.open || [];\n  const highs = quote.high || [];\n  const lows = quote.low || [];\n  const closes = quote.close || [];\n\n  const candles = [];\n  for (let i = 0; i < timestamps.length; i++) {\n    if (closes[i] !== null && opens[i] !== null) {\n      candles.push({\n        time: timestamps[i],\n        open: opens[i],\n        high: highs[i],\n        low: lows[i],\n        close: closes[i],\n        range: Math.abs(highs[i] - lows[i]),\n        body: Math.abs(closes[i] - opens[i]),\n        isBullish: closes[i] >= opens[i]\n      });\n    }\n  }\n  if (candles.length === 0) return null;\n  const last = candles[candles.length - 1];\n  const currentPrice = meta.regularMarketPrice || last.close;\n  const prevClose = meta.chartPreviousClose || meta.previousClose || candles[0].close;\n  const changePct = Number((((currentPrice - prevClose) / prevClose) * 100).toFixed(2));\n\n  // Análisis Bard.fx No Wick en últimas 15 velas de 5m\n  const recent15 = candles.slice(-15);\n  let noWickDetected = false;\n  let noWickType = null;\n  let impulseHigh = Math.max(...recent15.map(c => c.high));\n  let impulseLow = Math.min(...recent15.map(c => c.low));\n  let mitigationLevel = null;\n\n  for (let i = 0; i < recent15.length - 2; i++) {\n    const c = recent15[i];\n    if (c.range > 0) {\n      if (c.isBullish) {\n        const bottomWick = c.open - c.low;\n        const wickRatio = bottomWick / c.range;\n        if (wickRatio < 0.08) {\n          noWickDetected = true;\n          noWickType = 'BUY';\n          mitigationLevel = c.open;\n          impulseHigh = Math.max(impulseHigh, c.high);\n          break;\n        }\n      } else {\n        const topWick = c.high - c.open;\n        const wickRatio = topWick / c.range;\n        if (wickRatio < 0.08) {\n          noWickDetected = true;\n          noWickType = 'SELL';\n          mitigationLevel = c.open;\n          impulseLow = Math.min(impulseLow, c.low);\n          break;\n        }\n      }\n    }\n  }\n\n  // Gatillo 5m actual\n  let signal = null;\n  const recentLow = Math.min(...candles.slice(-6).map(c => c.low));\n  const recentHigh = Math.max(...candles.slice(-6).map(c => c.high));\n\n  if (noWickDetected && noWickType === 'BUY' && currentPrice >= mitigationLevel * 0.998) {\n    signal = 'BUY';\n  } else if (noWickDetected && noWickType === 'SELL' && currentPrice <= mitigationLevel * 1.002) {\n    signal = 'SELL';\n  }\n\n  return {\n    symbol: meta.symbol || 'ASSET',\n    currentPrice,\n    changePct,\n    noWickDetected,\n    noWickType,\n    signal,\n    recentLow,\n    recentHigh,\n    impulseHigh,\n    impulseLow\n  };\n};\n\n// ============================================================================\n// 2. DISPARO AUTÓNOMO PROGRAMADO (VIGILANTE CRON)\n// REGLA: SOLO ENVÍA ALERTA SI HAY UN SUCESO REAL (SL, 1:1 BE, TP ALTO DE VELA, O GATILLO).\n// SI TODO ESTÁ NORMAL, RETORNA [] PARA CERO SPAM.\n// ============================================================================\nif (mode === 'scheduled_scan') {\n  const alerts = [];\n\n  for (let i = 0; i < items.length; i++) {\n    const itemData = items[i].json;\n    const route = normalizeItems[i]?.json || firstRoute;\n    const parsed = parseYahooCandles(itemData);\n    if (!parsed) continue;\n\n    const pos = route.position;\n    const symbol = parsed.symbol;\n    const currentPrice = parsed.currentPrice;\n\n    // Caso A: El usuario tiene una COMPRA registrada con monto\n    if (pos && pos.buyPrice && pos.amountUsd) {\n      const buyPrice = pos.buyPrice;\n      const amountUsd = pos.amountUsd;\n      const shares = pos.shares || (amountUsd / buyPrice);\n      const currentVal = shares * currentPrice;\n      const pnlUsd = Number((currentVal - amountUsd).toFixed(2));\n      const pnlPct = Number((((currentPrice - buyPrice) / buyPrice) * 100).toFixed(2));\n\n      // Stop Loss a 5m (nivel bajo reciente o -1.5%)\n      const stopLoss = parsed.recentLow < buyPrice ? parsed.recentLow : buyPrice * 0.985;\n      const distSL = buyPrice - stopLoss;\n      const tp1_BE = buyPrice + distSL; // Ratio 1:1\n      const tp2_High = parsed.impulseHigh > buyPrice ? parsed.impulseHigh : buyPrice * 1.02;\n\n      // 1. Alerta de Stop Loss / Descenso Crítico\n      if (currentPrice <= stopLoss) {\n        alerts.push(\n          `🚨 *ALERTA VIGILANTE: STOP LOSS VENCIDO EN ${symbol}*\\n` +\n          `• Precio de Entrada: ${fmtPrice(buyPrice)}\\n` +\n          `• Precio Actual: ${fmtPrice(currentPrice)} (*${pnlPct}%*)\\n` +\n          `• PnL en Cuenta: *$${pnlUsd} USD*\\n` +\n          `⚠️ *Acción Recomendada:* Corte de pérdida o cierre según tu gestión de riesgo.`\n        );\n      }\n      // 2. Alerta de Break Even (Ratio 1:1 alcanzado)\n      else if (currentPrice >= tp1_BE && pnlPct >= 1.0) {\n        alerts.push(\n          `🛡️ *ALERTA VIGILANTE: RATIO 1:1 ALCANZADO EN ${symbol}*\\n` +\n          `• Precio de Entrada: ${fmtPrice(buyPrice)}\\n` +\n          `• Precio Actual: ${fmtPrice(currentPrice)} (*+${pnlPct}%*)\\n` +\n          `• Ganancia Flotante: *+$${pnlUsd} USD*\\n` +\n          `✅ *Acción Recomendada:* Mover Stop Loss a *Break Even (BE)*. Operación 100% libre de riesgo.`\n        );\n      }\n      // 3. Alerta de Take Profit 2 (Alto de Vela Previa)\n      else if (currentPrice >= tp2_High) {\n        alerts.push(\n          `🎯 *ALERTA VIGILANTE: TAKE PROFIT 2 EN ALTO DE VELA (${symbol})*\\n` +\n          `• Precio Entrada: ${fmtPrice(buyPrice)} ➔ Actual: ${fmtPrice(currentPrice)}\\n` +\n          `• Rendimiento: *+${pnlPct}%* (+$${pnlUsd} USD)\\n` +\n          `💰 *Acción Recomendada:* Toma parcial del *70% de la posición* y mantén trailing stop en el 30% restante.`\n        );\n      }\n    }\n    // Caso B: Activo solo en vigilancia (sin compra activa previa)\n    else {\n      if (parsed.signal === 'BUY') {\n        const sl = parsed.recentLow;\n        const tp = parsed.impulseHigh;\n        const dist = Math.abs(parsed.currentPrice - sl);\n        const shares = dist > 0 ? Math.floor(riskAmountUsd / dist) : 1;\n        alerts.push(\n          `🎯 *ALERTA GATILLO BARD.FX: ${symbol} (5 Minutos)*\\n` +\n          `• Señal: *COMPRA (Mitigación No Wick)*\\n` +\n          `• Precio Gatillo: ${fmtPrice(parsed.currentPrice)}\\n` +\n          `• Stop Loss (5m): ${fmtPrice(sl)}\\n` +\n          `• TP1 (Break Even 1:1): ${fmtPrice(parsed.currentPrice + dist)}\\n` +\n          `• TP2 (Alto de Vela): ${fmtPrice(tp)}\\n` +\n          `• Tamaño Sugerido: *${shares} títulos/contratos* ($${riskAmountUsd} USD en riesgo).`\n        );\n      }\n    }\n  }\n\n  // SI NO HUBO ALERTAS REALES, NO MOLESTAR AL USUARIO (CERO SPAM)\n  if (alerts.length === 0) {\n    return [];\n  }\n\n  const alertMessage = [\n    '🔔 *INFORME DE VIGILANCIA AUTÓNOMA BARD.FX*',\n    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',\n    alerts.join('\\n\\n━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\\n\\n')\n  ].join('\\n');\n\n  return [{\n    json: {\n      mode,\n      triggerSource,\n      telegramChatId,\n      telegramMessage: alertMessage,\n      replyMarkup: { inline_keyboard: inlineKeyboard }\n    }\n  }];\n}\n\n// ============================================================================\n// 3. VER MI PORTAFOLIO Y COMPRAS (Consolidado a petición del usuario)\n// ============================================================================\nif (mode === 'portfolio_view' || mode === 'manual_scan') {\n  const lines = [\n    '💼 *ESTADO DE TU PORTAFOLIO & VIGILANCIA*',\n    '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',\n    `💵 *Capital:* $${accountSize.toLocaleString('en-US')} USD | ⚖️ *Riesgo Trade:* ${riskPercent}% ($${riskAmountUsd} USD)`,\n    ''\n  ];\n\n  let totalInvested = 0;\n  let totalCurrentVal = 0;\n  let positionsFound = 0;\n  const watchlistLines = [];\n\n  for (let i = 0; i < items.length; i++) {\n    const itemData = items[i].json;\n    const route = normalizeItems[i]?.json || firstRoute;\n    const parsed = parseYahooCandles(itemData);\n    if (!parsed) continue;\n\n    const pos = route.position;\n    const symbol = parsed.symbol;\n    const currentPrice = parsed.currentPrice;\n\n    if (pos && pos.buyPrice && pos.amountUsd) {\n      positionsFound++;\n      const buyPrice = pos.buyPrice;\n      const amountUsd = pos.amountUsd;\n      const shares = pos.shares || (amountUsd / buyPrice);\n      const currentVal = shares * currentPrice;\n      const pnlUsd = Number((currentVal - amountUsd).toFixed(2));\n      const pnlPct = Number((((currentPrice - buyPrice) / buyPrice) * 100).toFixed(2));\n      totalInvested += amountUsd;\n      totalCurrentVal += currentVal;\n\n      const stopLoss = parsed.recentLow < buyPrice ? parsed.recentLow : buyPrice * 0.985;\n      const tp1_BE = buyPrice + (buyPrice - stopLoss);\n      const tp2_High = parsed.impulseHigh > buyPrice ? parsed.impulseHigh : buyPrice * 1.02;\n\n      let statusEmoji = '⏳ Normal';\n      if (currentPrice <= stopLoss) statusEmoji = '🚨 SL Vencido';\n      else if (currentPrice >= tp2_High) statusEmoji = '🎯 En TP2 (Alto)';\n      else if (currentPrice >= tp1_BE) statusEmoji = '🛡️ Listo para BE';\n\n      lines.push(\n        `📌 *${symbol}* (${shares.toFixed(2)} unids | Invertido: $${amountUsd.toLocaleString('en-US')} USD)\\n` +\n        `• Entrada: ${fmtPrice(buyPrice)} ➔ Actual: ${fmtPrice(currentPrice)}\\n` +\n        `• PnL: *${pnlPct >= 0 ? '+' : ''}${pnlPct}%* (*${pnlUsd >= 0 ? '+$' : '-$'}${Math.abs(pnlUsd)} USD*)\\n` +\n        `• Plan Salida: SL: ${fmtPrice(stopLoss)} | TP BE: ${fmtPrice(tp1_BE)} | TP2 Alto: ${fmtPrice(tp2_High)}\\n` +\n        `• Estado: *${statusEmoji}*\\n`\n      );\n    } else {\n      watchlistLines.push(\n        `• \\`${symbol}\\`: ${fmtPrice(parsed.currentPrice)} (${parsed.changePct >= 0 ? '+' : ''}${parsed.changePct}%) | Gatillo: ${parsed.signal || 'Monitoreando'}`\n      );\n    }\n  }\n\n  if (positionsFound > 0) {\n    const totalPnlUsd = Number((totalCurrentVal - totalInvested).toFixed(2));\n    const totalPnlPct = Number((((totalCurrentVal - totalInvested) / totalInvested) * 100).toFixed(2));\n    lines.push('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');\n    lines.push(`💰 *Total Invertido:* $${totalInvested.toLocaleString('en-US')} USD`);\n    lines.push(`📈 *Valor Actual:* $${totalCurrentVal.toLocaleString('en-US')} USD`);\n    lines.push(`📊 *PnL Global:* *${totalPnlPct >= 0 ? '+' : ''}${totalPnlPct}%* (*${totalPnlUsd >= 0 ? '+$' : '-$'}${Math.abs(totalPnlUsd)} USD*)`);\n    lines.push('');\n  }\n\n  if (watchlistLines.length > 0) {\n    lines.push('👁️ *Activos en Vigilancia de Gatillos:*');\n    lines.push(watchlistLines.join('\\n'));\n    lines.push('');\n  }\n\n  lines.push('🛡️ *Vigilancia Autónoma:* Activa cada 15m.');\n\n  return [{\n    json: {\n      mode,\n      triggerSource,\n      telegramChatId,\n      telegramMessage: lines.join('\\n'),\n      replyMarkup: { inline_keyboard: inlineKeyboard }\n    }\n  }];\n}\n\n// ============================================================================\n// 4. ANÁLISIS INDIVIDUAL DE CUALQUIER ACTIVO\n// ============================================================================\nconst singleItem = items[0]?.json;\nconst parsed = parseYahooCandles(singleItem);\n\nif (!parsed) {\n  return [{\n    json: {\n      mode: 'error',\n      triggerSource,\n      telegramChatId,\n      telegramMessage: `❌ No fue posible obtener cotizaciones recientes para el activo consultado. Verifica el símbolo e intenta nuevamente.`,\n      replyMarkup: { inline_keyboard: inlineKeyboard }\n    }\n  }];\n}\n\nconst pos = firstRoute.position;\nconst currentPrice = parsed.currentPrice;\nconst sl = parsed.recentLow;\nconst distSL = Math.max(0.0001, Math.abs(currentPrice - sl));\nconst tp1_BE = currentPrice + distSL;\nconst tp2_High = Math.max(parsed.impulseHigh, currentPrice + distSL * 1.5);\nconst suggestedShares = Math.max(1, Math.floor(riskAmountUsd / distSL));\n\nconst tradeLines = [\n  `🎯 *ANÁLISIS BARD.FX: ${parsed.symbol} (5 MINUTOS)*`,\n  '━━━━━━━━━━━━━━━━━━━━━━━━━━━━━',\n  `💲 *Precio Actual:* ${fmtPrice(currentPrice)} (${parsed.changePct >= 0 ? '+' : ''}${parsed.changePct}%)`,\n  `🕯️ *Vela Sin Mecha (No Wick):* ${parsed.noWickDetected ? '✅ Detectada en últimas 15 velas' : '⏳ No detectada recientemente'}`,\n  `🚦 *Gatillo Institucional:* ${parsed.signal ? '*' + parsed.signal + ' DETECTADO*' : 'Esperando mitigación y vela de rechazo'}`,\n  '',\n  '📐 *MATEMÁTICA DEL TRADE (1:1 Y PLAN DE SALIDA):*',\n  `• 🔴 *Stop Loss a 5m:* ${fmtPrice(sl)} (Distancia: ${distSL.toFixed(4)})`,\n  `• 🛡️ *TP1 (Mover a Break Even):* ${fmtPrice(tp1_BE)} (Ratio 1:1)`,\n  `• 🎯 *TP2 (Alto de Vela Previa):* ${fmtPrice(tp2_High)} (Cierre del 70%)`,\n  `• ⚖️ *Gestión sugerida:* Arriesgar *$${riskAmountUsd} USD* ➔ Comprar *${suggestedShares} títulos/unidades*`\n];\n\nif (pos && pos.buyPrice) {\n  const pnlPct = (((currentPrice - pos.buyPrice) / pos.buyPrice) * 100).toFixed(2);\n  tradeLines.push('');\n  tradeLines.push(`💼 *Tu Compra Registrada:*`);\n  tradeLines.push(`• Entrada: ${fmtPrice(pos.buyPrice)} | Monto: $${pos.amountUsd} USD`);\n  tradeLines.push(`• PnL Actual: *${pnlPct >= 0 ? '+' : ''}${pnlPct}%*`);\n}\n\nreturn [{\n  json: {\n    mode: 'single_trade',\n    triggerSource,\n    telegramChatId,\n    telegramMessage: tradeLines.join('\\n'),\n    replyMarkup: { inline_keyboard: inlineKeyboard }\n  }\n}];"
+      }
+    },
+    {
+      "id": "58d33197-aa3d-4708-8dc2-f098c593ec90",
+      "name": "Send Telegram Alert",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        896,
+        96
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.telegram.org/bot8923613669:AAG8CHP09iybu_B47XUPsMeeMdj-rURX9Ds/sendMessage",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ chat_id: $json.telegramChatId, text: $json.telegramMessage, parse_mode: \"Markdown\", reply_markup: $json.replyMarkup }) }}",
+        "options": {}
+      },
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "d71645d8-5f08-47ca-b149-ca35830931f6",
+      "name": "Is Webhook Trigger",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1120,
+        96
+      ],
+      "parameters": {
+        "conditions": {
+          "combinator": "and",
+          "conditions": [
+            {
+              "leftValue": "={{ $('Normalize Input').first().json.triggerSource }}",
+              "operator": {
+                "operation": "notEquals",
+                "type": "string"
+              },
+              "rightValue": "schedule"
+            }
+          ],
+          "options": {
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          }
+        }
+      }
+    },
+    {
+      "id": "cf694ee5-e090-4f4a-b2a2-cd40b1559134",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        1344,
+        96
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: 'success', result: $('Bard.fx Engine & Trade Math').first().json }) }}",
+        "options": {
+          "responseCode": 200
+        }
+      }
+    },
+    {
+      "id": "576e9f44-24de-4ce5-bae5-db8c382e0c14",
+      "name": "Vigilante Scanner (Cron 5m)",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        192
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "*/5 * * * *"
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "nodeGroups": [],
+  "activeVersion": {
+    "sameAsDraft": true
+  },
+  "meta": {
+    "aiBuilderAssisted": true,
+    "builderVariant": "mcp"
+  }
+}
